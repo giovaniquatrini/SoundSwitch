@@ -1,0 +1,25 @@
+name: Custom Fork Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - custom/mic-state-sounds
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      configuration: Release
+      publish: true
+      run-tests: true
+      upload-test-results: true
+      publish-artifact-name: SoundSwitch-custom-build
+    secrets: inherit
