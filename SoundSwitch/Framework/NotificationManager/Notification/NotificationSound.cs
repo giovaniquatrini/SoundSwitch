@@ -1,4 +1,4 @@
-﻿/********************************************************************
+/********************************************************************
  * Copyright (C) 2015-2017 Antoine Aflalo
  *
  * This program is free software; you can redistribute it and/or
@@ -24,6 +24,7 @@ using SoundSwitch.Audio.Manager;
 using SoundSwitch.Common.Framework.Audio.Device;
 using SoundSwitch.Framework.Audio;
 using SoundSwitch.Framework.Audio.Play;
+using SoundSwitch.Framework.Configuration;
 using SoundSwitch.Framework.NotificationManager.Notification.Configuration;
 using SoundSwitch.Framework.Telemetry;
 using SoundSwitch.Framework.Threading;
@@ -67,9 +68,6 @@ internal class NotificationSound : INotification
         {
             var audioDevice = AudioSwitcher.Instance.GetDevice(profile.Playback.Id);
             if (audioDevice == null) return;
-            // The AudioDevice properties are an immutable snapshot — safe to read off the ComThread.
-            // The DeviceFullInfo owns the AudioDevice; NotifyDefaultChanged only reads it, so the
-            // using disposes both here (previously the device leaked on this path).
             using var device = new DeviceFullInfo(audioDevice);
             NotifyDefaultChanged(device);
         }
@@ -93,10 +91,22 @@ internal class NotificationSound : INotification
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = new CancellationTokenSource();
 
-        // Discord-style audible feedback: use a distinct short tone for each
-        // microphone state so the user can know the result without looking at
-        // the screen. Mute is a descending tone; unmute is an ascending tone.
-        var soundNotification = CreateMicrophoneStateSound(newMuteState);
+        var customPath = newMuteState
+            ? MicrophoneSoundConfigs.Configuration.MutedSoundFilePath
+            : MicrophoneSoundConfigs.Configuration.UnmutedSoundFilePath;
+
+        CachedSound soundNotification;
+        try
+        {
+            soundNotification = !string.IsNullOrWhiteSpace(customPath) && File.Exists(customPath)
+                ? new CachedSound(customPath)
+                : CreateMicrophoneStateSound(newMuteState);
+        }
+        catch (Exception)
+        {
+            // Invalid/deleted custom audio must never break microphone toggling.
+            soundNotification = CreateMicrophoneStateSound(newMuteState);
+        }
 
         JobScheduler.Instance.ScheduleJob(new PlaySoundJob(null, soundNotification), _cancellationTokenSource.Token);
     }
@@ -122,8 +132,6 @@ internal class NotificationSound : INotification
         var totalSamples = (int)(sampleRate * durationSeconds);
         var audioBytes = new byte[totalSamples * sizeof(float)];
 
-        // Unmute rises; mute falls. The glide makes the two states immediately
-        // distinguishable while remaining short and unobtrusive.
         var startFrequency = isMuted ? 880.0 : 520.0;
         var endFrequency = isMuted ? 520.0 : 880.0;
         double phase = 0;
