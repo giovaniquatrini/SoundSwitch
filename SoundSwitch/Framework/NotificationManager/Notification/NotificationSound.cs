@@ -17,6 +17,7 @@ using System.Drawing;
 using System.IO;
 using System.Threading;
 
+using NAudio.Wave;
 using SoundSwitch.Audio.Manager.Interop.Enum;
 
 using SoundSwitch.Audio.Manager;
@@ -92,11 +93,10 @@ internal class NotificationSound : INotification
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = new CancellationTokenSource();
 
-        CachedSound soundNotification;
-        if (HasCustomSound())
-            soundNotification = Configuration.CustomSound;
-        else
-            soundNotification = new CachedSound(GetStreamCopy());
+        // Discord-style audible feedback: use a distinct short tone for each
+        // microphone state so the user can know the result without looking at
+        // the screen. Mute is a descending tone; unmute is an ascending tone.
+        var soundNotification = CreateMicrophoneStateSound(newMuteState);
 
         JobScheduler.Instance.ScheduleJob(new PlaySoundJob(null, soundNotification), _cancellationTokenSource.Token);
     }
@@ -111,6 +111,40 @@ internal class NotificationSound : INotification
 
     private bool HasCustomSound() =>
         Configuration.CustomSound != null && File.Exists(Configuration.CustomSound.FilePath);
+
+    private static CachedSound CreateMicrophoneStateSound(bool isMuted)
+    {
+        const int sampleRate = 44100;
+        const int channels = 1;
+        const double durationSeconds = 0.18;
+        const float volume = 0.22f;
+
+        var totalSamples = (int)(sampleRate * durationSeconds);
+        var audioBytes = new byte[totalSamples * sizeof(float)];
+
+        // Unmute rises; mute falls. The glide makes the two states immediately
+        // distinguishable while remaining short and unobtrusive.
+        var startFrequency = isMuted ? 880.0 : 520.0;
+        var endFrequency = isMuted ? 520.0 : 880.0;
+        double phase = 0;
+
+        for (var i = 0; i < totalSamples; i++)
+        {
+            var progress = (double)i / Math.Max(1, totalSamples - 1);
+            var frequency = startFrequency + ((endFrequency - startFrequency) * progress);
+            phase += 2.0 * Math.PI * frequency / sampleRate;
+
+            var attack = Math.Min(1.0, progress / 0.08);
+            var release = Math.Min(1.0, (1.0 - progress) / 0.28);
+            var envelope = Math.Min(attack, release);
+            var sample = (float)(Math.Sin(phase) * envelope * volume);
+
+            BitConverter.TryWriteBytes(audioBytes.AsSpan(i * sizeof(float), sizeof(float)), sample);
+        }
+
+        using var stream = new MemoryStream(audioBytes, writable: false);
+        return new CachedSound(stream, WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels));
+    }
 
     private MemoryStream GetStreamCopy()
     {
